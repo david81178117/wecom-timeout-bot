@@ -5,7 +5,7 @@ import asyncio
 
 app = FastAPI()
 
-TIMEOUT_SECONDS = 600  # 10分钟
+TIMEOUT_SECONDS = 30  # 10分钟
 
 
 class CustomerMessage(BaseModel):
