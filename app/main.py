@@ -36,6 +36,7 @@ async def customer_message(msg: CustomerMessage):
     convo["last_customer_msg_time"] = now
     convo["timeout_handled"] = False  # 新消息来了重新计时
     conversations[msg.convo_id] = convo
+    convo["last_customer_msg_content"] = msg.content
 
     print(f"[客户消息] 会话 {msg.convo_id} 内容：{msg.content} 时间：{now}")
     return {"status": "ok"}
