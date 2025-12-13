@@ -1,3 +1,6 @@
+import httpx
+import os
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 from datetime import datetime, timedelta
@@ -79,14 +82,80 @@ async def timeout_checker():
 
         await asyncio.sleep(30)
 
+# ===== Dify 配置 =====
+DIFY_BASE_URL = "https://api.dify.ai/v1"
+DIFY_API_URL = f"{DIFY_BASE_URL}/chat-messages"
+
+# 从环境变量中读取（来自 Codespaces Secrets）
+DIFY_API_KEY = os.getenv("DIFY_API_KEY", "")
+
+if not DIFY_API_KEY:
+    raise RuntimeError("❌ 未检测到 DIFY_API_KEY，请在 Codespaces Secrets 中配置")
+
+# 用于保存：你自己的 convo_id -> Dify 的 conversation_id
+dify_conversation_map = {}
+
+
+async def call_dify_llm(customer_id: str, convo_id: str, last_message: str) -> str:
+    """
+    调用 Dify Chat API，根据客户最后一句话生成智能回复
+    """
+    headers = {
+        "Authorization": f"Bearer {DIFY_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "inputs": {
+            "customer_id": customer_id
+        },
+        "query": last_message,
+        "response_mode": "blocking",   # 同步等待模型回复
+        "user": f"cust:{customer_id}", # 稳定的用户标识
+    }
+
+    # 如果之前已经有 Dify 的 conversation_id，就带回去续上下文
+    if convo_id in dify_conversation_map:
+        payload["conversation_id"] = dify_conversation_map[convo_id]
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            DIFY_API_URL,
+            headers=headers,
+            json=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    # 保存 Dify 返回的 conversation_id，供下次继续对话
+    dify_cid = data.get("conversation_id")
+    if dify_cid:
+        dify_conversation_map[convo_id] = dify_cid
+
+    # 返回模型生成的文本（兼容不同返回格式）
+    return (
+        data.get("answer")
+        or data.get("output_text")
+        or "（大模型未返回内容）"
+    )
+
 
 async def handle_timeout(convo_id: str, convo: dict):
     customer_id = convo.get("customer_id", "unknown")
+    last_msg = convo.get("last_customer_msg_content", "")
+
+    # 调 Dify 让大模型生成一段真正的客服回复
+    try:
+        ai_reply = await call_dify_llm(customer_id, convo_id, last_msg)
+    except Exception as e:
+        ai_reply = f"（调用大模型失败，错误：{e}）"
+
     print("====== [超时触发] ======")
     print(f"会话ID: {convo_id}, 客户ID: {customer_id}")
-    print("[机器人→客户]：你好呀，我是智能小助手，目前老师暂时不在线，你的消息已经记录啦～")
+    print(f"[机器人→客户]：{ai_reply}")
     print("[系统→管理员]：某个会话已超时10分钟未回复，请关注。")
     print("=======================")
+
 
 
 @app.on_event("startup")
