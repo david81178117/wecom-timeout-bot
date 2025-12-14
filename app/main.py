@@ -95,22 +95,25 @@ if not DIFY_API_KEY:
 # 用于保存：你自己的 convo_id -> Dify 的 conversation_id
 dify_conversation_map = {}
 
-
 async def call_dify_llm(customer_id: str, convo_id: str, last_message: str) -> str:
     """
-    调用 Dify Chat API，根据客户最后一句话生成智能回复
+    调用 Dify Chat API，根据客户最后一句话生成智能回复。
+    关键改造：
+    - 无论成功/失败，打印 Dify 返回体，避免 400 时 body 被吞掉
+    - inputs 默认发送 {}（避免应用未声明变量导致 400）
+    - query 兜底，避免空字符串导致 400
     """
     headers = {
         "Authorization": f"Bearer {DIFY_API_KEY}",
         "Content-Type": "application/json",
     }
 
+    safe_query = (last_message or "").strip() or "你好，我想咨询课程。"
+
     payload = {
-        "inputs": {
-            "customer_id": customer_id
-        },
-        "query": last_message,
-        "response_mode": "blocking",   # 同步等待模型回复
+        "inputs": {},                  # 先用空 inputs，避免 Dify 输入校验 400
+        "query": safe_query,
+        "response_mode": "blocking",
         "user": f"cust:{customer_id}", # 稳定的用户标识
     }
 
@@ -119,12 +122,15 @@ async def call_dify_llm(customer_id: str, convo_id: str, last_message: str) -> s
         payload["conversation_id"] = dify_conversation_map[convo_id]
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            DIFY_API_URL,
-            headers=headers,
-            json=payload,
-        )
-        resp.raise_for_status()
+        resp = await client.post(DIFY_API_URL, headers=headers, json=payload)
+
+        # ★ 关键：先把 body 打出来（无论 2xx 还是 4xx/5xx）
+        print(f"[DIFY RAW] status={resp.status_code} body={resp.text}")
+
+        # 如果非 2xx，直接把 body 作为可读错误返回（不要 raise_for_status 吞细节）
+        if resp.status_code < 200 or resp.status_code >= 300:
+            return f"（调用大模型失败：HTTP {resp.status_code}，body={resp.text}）"
+
         data = resp.json()
 
     # 保存 Dify 返回的 conversation_id，供下次继续对话
@@ -132,12 +138,8 @@ async def call_dify_llm(customer_id: str, convo_id: str, last_message: str) -> s
     if dify_cid:
         dify_conversation_map[convo_id] = dify_cid
 
-    # 返回模型生成的文本（兼容不同返回格式）
-    return (
-        data.get("answer")
-        or data.get("output_text")
-        or "（大模型未返回内容）"
-    )
+    return data.get("answer") or data.get("output_text") or "（大模型未返回内容）"
+
 
 
 async def handle_timeout(convo_id: str, convo: dict):
