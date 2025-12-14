@@ -98,10 +98,8 @@ dify_conversation_map = {}
 async def call_dify_llm(customer_id: str, convo_id: str, last_message: str) -> str:
     """
     调用 Dify Chat API，根据客户最后一句话生成智能回复。
-    关键改造：
-    - 无论成功/失败，打印 Dify 返回体，避免 400 时 body 被吞掉
-    - inputs 默认发送 {}（避免应用未声明变量导致 400）
-    - query 兜底，避免空字符串导致 400
+    - 无论成功/失败都打印返回体，确保拿到 400 的 body
+    - inputs 默认发空，避免未声明变量导致 400
     """
     headers = {
         "Authorization": f"Bearer {DIFY_API_KEY}",
@@ -111,34 +109,32 @@ async def call_dify_llm(customer_id: str, convo_id: str, last_message: str) -> s
     safe_query = (last_message or "").strip() or "你好，我想咨询课程。"
 
     payload = {
-        "inputs": {},                  # 先用空 inputs，避免 Dify 输入校验 400
+        "inputs": {},  # 先发空，拿到 body 后再按需补字段
         "query": safe_query,
         "response_mode": "blocking",
-        "user": f"cust:{customer_id}", # 稳定的用户标识
+        "user": f"cust:{customer_id}",
     }
 
-    # 如果之前已经有 Dify 的 conversation_id，就带回去续上下文
     if convo_id in dify_conversation_map:
         payload["conversation_id"] = dify_conversation_map[convo_id]
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(DIFY_API_URL, headers=headers, json=payload)
 
-        # ★ 关键：先把 body 打出来（无论 2xx 还是 4xx/5xx）
+        # ★关键：一定打印出 Dify 返回体
         print(f"[DIFY RAW] status={resp.status_code} body={resp.text}")
 
-        # 如果非 2xx，直接把 body 作为可读错误返回（不要 raise_for_status 吞细节）
         if resp.status_code < 200 or resp.status_code >= 300:
             return f"（调用大模型失败：HTTP {resp.status_code}，body={resp.text}）"
 
         data = resp.json()
 
-    # 保存 Dify 返回的 conversation_id，供下次继续对话
     dify_cid = data.get("conversation_id")
     if dify_cid:
         dify_conversation_map[convo_id] = dify_cid
 
     return data.get("answer") or data.get("output_text") or "（大模型未返回内容）"
+
 
 
 
